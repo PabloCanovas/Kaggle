@@ -1,0 +1,760 @@
+---
+  title: "Exploratory Analysis - Fraud Detection"
+author: "Pablo Cánovas Tourné"
+date: "July 31, 2019"
+output:
+  html_document: 
+  toc: true
+theme: united  
+highlight: tango
+---
+  
+  ```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 7)
+```
+
+# Introduction {.tabset}
+
+In this competition we are required to use our creativity and knowledge to develop advanced machine learning models to help detecting fraud in worldwide transactions.
+
+* The data comes from Vesta's real-world e-commerce transactions and contains a wide range of features from device type to product features. You also have the opportunity to create new features to improve your results.*
+
+* If successful, you’ll improve the efficacy of fraudulent transaction alerts for millions of people around the world, helping hundreds of thousands of businesses reduce their fraud loss and increase their revenue. And of course, you will save party people just like you the hassle of false positives.*
+
+\ 
+
+**Let's do it.**
+  
+  ![](../input/fraud-ai/fraud_ai.png)
+
+\ 
+
+The training dataset consists of information about nearly 600.000 transactions and is grouped into 2 files:
+  
+  * train_identity.csv (containing information about the properties themselves)
+* train_transaction.csv (containing information about the transcations)
+
+Here is a first exploratory analysis of the competition datasets.
+
+We start by loading required packages
+```{r, message=FALSE, cache=FALSE}
+library(DT)
+library(magrittr)
+library(lubridate)
+library(tidyverse)
+library(vroom)
+library(ggthemes)
+library(gridExtra)
+library(ggridges)
+```
+
+And then reading the data:
+  
+  ```{r}
+train_identity <- vroom("../input/ieee-fraud-detection/train_identity.csv", delim = ",")
+train_transaction <- vroom("../input/ieee-fraud-detection/train_transaction.csv", delim = ",")
+```
+
+Take a peek at the dataset! 
+  
+  ## Transactions Data
+  
+  ```{r, result='asis', echo=FALSE}
+datatable(head(train_transaction,100), style="bootstrap", class="table-condensed",
+          options = list(dom = 'tp', scrollX = TRUE))
+```
+
+## Identity Data
+
+```{r, result='asis', echo=FALSE}
+datatable(head(train_identity,100), style="bootstrap", class="table-condensed",
+          options = list(dom = 'tp', scrollX = TRUE))
+```
+
+
+# Prepare data
+
+Now we create a couple of identity-based features and join the data sets to begin the analysis.
+Also, [we were told some variables are categorical](https://www.kaggle.com/c/ieee-fraud-detection/discussion/101203), so we apply the transformation.
+
+```{r}
+train_identity %<>%
+  mutate_at(vars(id_12:id_38, DeviceType, DeviceInfo), as.factor) %>% 
+  mutate(N_NAs_id = rowSums(is.na(.)),
+         Has_Identity = TRUE)
+
+train_transaction %<>% 
+  rename(Is_Fraud = isFraud) %>% 
+  mutate_at(vars(Is_Fraud, ProductCD, card1:card6, addr1, addr2,
+                 P_emaildomain, R_emaildomain, M1:M9), as.factor)
+
+trainSet <- full_join(train_identity,
+                      train_transaction,
+                      by = "TransactionID") %>% 
+  mutate(Has_Identity = if_else(is.na(Has_Identity), FALSE, Has_Identity)) %>% 
+  select(TransactionID, Is_Fraud, everything()) %>% 
+  mutate(Is_Fraud = Is_Fraud %>% as.character() %>% as.numeric())        # We prefer to store it as numeric in this object
+```
+
+As we plan to look at the features and their behaviour depending on the target feature 'Is_Fraud',
+for now we are restricting the exploratory analysis to the training set.
+
+Besides, as a previous step to the analysis, we are converting all character features into factors:
+  
+  ```{r}
+trainSet_chr <- trainSet %>% select_if(is.character) %>% mutate_all(~ as.factor(.))
+trainSet <- trainSet %>%
+  select(-one_of(names(trainSet_chr))) %>%
+  bind_cols(trainSet_chr) %>%
+  select(names(trainSet))
+```
+# Numeric Identity Features
+
+Now we are set, let's start inspecting identity numeric features:
+
+```{r}
+train_identity %>%
+  select_if(is.numeric) %>%
+  select(contains("id_")) %>%
+  select(-id_02) %>%                      # id_02 is too big and we are setting it apart
+  gather(Var, Value) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_histogram(aes(x = Value), fill = "firebrick", alpha = 0.66, binwidth = 1) +
+  facet_wrap(~ Var, scales = "free") +
+  labs(title = "Identity continuous variables distribution") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+```
+
+We plot variable id_02 apart because of its size:
+
+```{r, fig.height= 5}
+id_02_hist <- train_identity %>%
+  select(id_02) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_histogram(aes(x = id_02), fill = "firebrick", alpha = 0.66, binwidth = 5000) +
+  labs(title = "id_02 distribution") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+
+id_02_log_hist <- train_identity %>%
+  select(id_02) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_histogram(aes(x = id_02), fill = "firebrick", alpha = 0.66, binwidth = .05) +
+  labs(title = "id_02 log distribution") +
+  scale_x_log10() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+gridExtra::grid.arrange(id_02_hist, id_02_log_hist)
+```
+
+We can also show some boxplots to get a feeling of the distributions:
+
+```{r, fig.height= 5}
+train_identity %>%
+  select_if(is.numeric) %>%
+  select(contains("id_")) %>%
+  select(-id_02) %>%                           # id_02 is too big and we are setting it apart
+  gather(Var, Value) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_boxplot(aes(x = fct_rev(Var), y = Value, fill = Var, col = Var), alpha = 0.25) +
+  coord_flip() +
+  labs(title = "Identity continuous variables boxplots") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+```
+
+```{r, echo=FALSE}
+rm(train_identity)
+gc()
+```
+
+Nice!
+
+Let's check now Fraud ratio vs Identity information
+
+```{r, fig.height= 4}
+# Fraud Ratio vs Has_Identity
+
+trainSet %>%              # We are using here the full trainSet only because it includes the label Is_Fraud
+  select(Is_Fraud, Has_Identity) %>%
+  group_by(Is_Fraud, Has_Identity) %>%
+  summarise(NObs = n()) %>%
+  group_by(Has_Identity) %>%
+  mutate(Fraud_Ratio = if_else(Is_Fraud == 1, round(NObs/sum(NObs)*100,2), NA_real_)) %>%
+  mutate(Is_Fraud = Is_Fraud %>% as.factor()) %>%
+  ggplot() +
+  geom_bar(aes(Has_Identity, NObs, fill = Is_Fraud), alpha = 0.5, stat = "identity", position = "dodge") +
+  geom_line(data = . %>% filter(Is_Fraud == "1"),
+            aes(Has_Identity, Fraud_Ratio*50000, group = Is_Fraud), col = "firebrick") +
+  geom_point(data = . %>% filter(Is_Fraud == "1"),
+             aes(Has_Identity, Fraud_Ratio*50000), size = 2, col = "firebrick") +
+  labs(title = "Fraud ratio vs Identity information",
+       y = "Number of observations") +
+  scale_fill_tableau() +
+  scale_y_continuous(sec.axis = sec_axis(~ . / 50000)) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+```
+
+```{r, fig.height= 4}
+# Number of NAs vars vs Fraud
+
+trainSet %>%
+  filter(Has_Identity) %>%
+  select(Is_Fraud, N_NAs_id) %>%
+  mutate(Is_Fraud = Is_Fraud %>% as.logical()) %>%
+  ggplot() +
+  geom_boxplot(aes(x = Is_Fraud, y = N_NAs_id, fill = Is_Fraud, group = Is_Fraud), alpha = 0.5) +
+  scale_fill_tableau() +
+  coord_flip() +
+  labs(title = "Number of identity missing variables") +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.title.y = element_text(angle = 0, vjust = .5))
+```
+
+
+We found a highter ratio when identity information is available!
+  
+  # Transaction Data
+  
+  Now let's have a look at the other dataframe: Transaction Data
+
+
+```{r}
+train_transaction <- train_transaction %>%
+  mutate_at(vars(Is_Fraud, ProductCD, card1:card6, addr1, addr2,
+                 P_emaildomain, R_emaildomain, M1:M9), as.factor)
+```
+
+## C Features
+Here we plot the distribution of C features:
+
+```{r}
+train_transaction %>%
+  select(Is_Fraud, starts_with("C"), -starts_with("card")) %>%
+  gather(Var, Value, -Is_Fraud) %>%
+  mutate(Value = Value+1) %>%
+  ggplot() +
+  geom_density(aes(x = Value, col = Is_Fraud, fill = Is_Fraud), alpha = 0.25) +
+  facet_wrap(~ Var, scales = "free") +
+  labs(title = "C variables distribution by Is_Fraud (logX)") +
+  scale_fill_tableau() +
+  scale_color_tableau() +
+  scale_x_log10() +
+  theme(plot.title = element_text(hjust = .5, size = 15),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+```
+
+## D Features
+Turn for D variables:
+
+```{r}
+train_transaction %>%
+  select(starts_with("D"), -starts_with("dist"), -starts_with("Device")) %>%
+  map(~ .x %>% subset(. < 0)) %>%
+  compact()
+```
+
+There are very few negative values in D features. Are that values errors?
+
+```{r}
+train_transaction %>%
+  select(Is_Fraud, starts_with("D"), -starts_with("dist"), -starts_with("Device")) %>%
+  gather(Var, Value, -Is_Fraud) %>%
+  mutate(Value = Value +1) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_density(aes(x = Value, col = Is_Fraud, fill = Is_Fraud), alpha = 0.25) +
+  facet_wrap(~ Var, scales = "free") +
+  labs(title = "D variables densities by Is_Fraud (logX)",
+       subtitle = "Dropped 45 rows with negative values. Watch out!") +
+  scale_fill_tableau() +
+  scale_color_tableau() +
+  scale_x_log10() +
+  theme(plot.title = element_text(size = 15, hjust = .5),
+        plot.subtitle = element_text(size = 12, hjust = .5),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+```
+
+## Dist Features
+
+```{r, fig.height= 5}
+dists_hist <- train_transaction %>%
+  select(contains("dist")) %>%
+  gather(Var, Value) %>%
+  mutate(Value = Value + 1) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_histogram(aes(x = Value), fill = "firebrick",alpha = 0.66, bins = 30) +
+  facet_wrap(~ Var, scales = "free") +
+  labs(title = "Dist variables distribution (logX)") +
+  theme_minimal()  %+replace%
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        axis.title.x = element_text(hjust = 0.02),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  scale_fill_tableau() +
+  scale_color_tableau() +
+  scale_x_log10()
+
+dists_dens <- train_transaction %>%
+  select(Is_Fraud, contains("dist")) %>%
+  gather(Var, Value, -Is_Fraud) %>%
+  mutate(Value = Value + 1) %>%
+  na.omit() %>%
+  ggplot() +
+  geom_density(aes(x = Value, col = Is_Fraud, fill = Is_Fraud), alpha = 0.25) +
+  facet_wrap(~ Var, scales = "free") +
+  theme_minimal()  %+replace%
+  theme(plot.title = element_text(hjust = 0.5, size = 16),
+        axis.title.x = element_text(hjust = 0.02),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position="bottom") +
+  labs(title = "Dist variables distribution by Is_Fraud (logX)") +
+  scale_fill_tableau() +
+  scale_color_tableau() +
+  scale_x_log10()
+
+
+grid.arrange(dists_hist, dists_dens)
+```
+
+```{r, echo=FALSE}
+rm(train_transaction)
+gc()
+```
+
+## M Features
+
+M variables are categorical features:
+
+```{r}
+# Distribution and Fraud Ratio by Mvariable and level
+
+fraud_ratio_M <- trainSet %>%
+  mutate(Is_Fraud = as.factor(Is_Fraud)) %>%
+  select(Is_Fraud, starts_with("M")) %>%
+  mutate(Is_Fraud = if_else(Is_Fraud == 0, 0, 1)) %>%
+  gather(Var, Level, -Is_Fraud) %>%
+  group_by(Var, Level) %>%
+  summarise(FraudRatio = sum(Is_Fraud)/n()*100,
+            FraudRatio = FraudRatio %>% round(1)) %>%
+  ungroup()
+
+trainSet_summarised1_M <- trainSet %>%
+  mutate(Is_Fraud = as.factor(Is_Fraud)) %>%
+  select(Is_Fraud, starts_with("M")) %>%
+  gather(Var, Level, -Is_Fraud) %>%
+  group_by(Is_Fraud, Var, Level) %>%
+  summarise(n = n()) %>%
+  ungroup()
+
+var_levels_M <- trainSet_summarised1_M %>%
+  group_split(Var) %>%
+  map_dfr(~ .x %>% expand(Is_Fraud, Var, Level))
+
+trainSet_summarised_M <- trainSet_summarised1_M %>%
+  full_join(var_levels_M, by = c("Is_Fraud", "Var", "Level")) %>%
+  left_join(fraud_ratio_M, by = c("Var", "Level")) %>%
+  mutate(n = if_else(is.na(n), 0L, n),
+         FraudRatio = if_else(is.na(FraudRatio) & Is_Fraud == "0", 100, FraudRatio),
+         FraudRatio = if_else(is.na(FraudRatio) & Is_Fraud == "1", 0, FraudRatio)) %>%
+  arrange(Var)
+
+trainSet_summarised_M %>%
+  mutate(FraudRatio = if_else(Is_Fraud == "0", NA_real_, FraudRatio),
+         Is_Fraud = fct_reorder(Is_Fraud, n)) %>%
+  ggplot() +
+  geom_col(aes(Level, n, fill = Is_Fraud), position = "stack", alpha = 0.5) +
+  geom_line(data = . %>% filter(Is_Fraud == "1"),
+            aes(x = Level, y = FraudRatio*3e5, group = Is_Fraud), col = "firebrick") +
+  geom_point(data = . %>% filter(Is_Fraud == "1"),
+             aes(x = Level, y = FraudRatio*3e5), col = "firebrick") +
+  facet_wrap(~Var, scales = "free") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y.right = element_text(color = "firebrick"),
+        axis.text.x = element_text(size = 11),
+        plot.title = element_text(size = 15, hjust = .5),
+        plot.subtitle = element_text(size = 12, hjust = .5)) +
+  labs(title = "M variables by level",
+       y = "Number of observations") +
+  scale_y_continuous(sec.axis = sec_axis(~ . / 3e5, name = "% of Fraud")) +
+  scale_fill_tableau(direction = -1)
+
+```
+
+# Transaction Amount
+
+Inspecting now the Transaction amount feature on its own:
+
+**How is it distributed?**
+
+```{r, fig.height= 4}
+trainSet %>%
+  select(Is_Fraud, TransactionAmt) %>%
+  mutate(Is_Fraud = as.factor(Is_Fraud)) %>%
+  ggplot() +
+  geom_density(aes(TransactionAmt, fill = Is_Fraud, col = Is_Fraud), alpha = .25) +
+  scale_color_tableau() +
+  scale_fill_tableau() +
+  lims(x = c(0,1500)) +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(hjust = .5),
+        plot.subtitle = element_text(hjust = .5)) +
+  labs(title = "Transaction amount distribution by Is_Fraud",
+       subtitle = "Bounded between 0 and 1000 USD")
+
+trainSet %>%
+  select(Is_Fraud, TransactionAmt) %>%
+  mutate(Is_Fraud = as.logical(Is_Fraud)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = Is_Fraud, y = TransactionAmt, fill = Is_Fraud, col = Is_Fraud), alpha = .1) +
+  scale_color_tableau() +
+  scale_fill_tableau() +
+  lims(y = c(0,1000)) +
+  coord_flip() +
+  labs(title = "Transaction amount boxplots by Is_Fraud",
+       subtitle = "Bounded between 0 and 1000 USD") +
+  theme(axis.title.y = element_text(angle = 0, vjust = .5),
+        plot.title = element_text(hjust = .5),
+        plot.subtitle = element_text(hjust = .5))
+```
+
+# Rest of categorical data
+
+**How many levels have each variable?**
+
+```{r, fig.height= 4}
+n_levels_df <- trainSet %>%
+  select_if(is.factor) %>%
+  select(-one_of("M4")) %>%
+  gather(Var, Level) %>%
+  distinct() %>%
+  group_by(Var) %>%
+  summarise(NLevels = n()) %>%
+  ungroup()
+
+n_levels_df %>%
+  filter(!Var == "DeviceInfo") %>%
+  mutate(Var = fct_reorder(Var, NLevels)) %>%
+  ggplot() +
+  geom_col(aes(x = Var, y = NLevels), fill = "goldenrod3") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Number of levels of each categorical variable",
+       x = "Number of levels") +
+  theme(axis.title.y = element_blank(),
+        plot.title = element_text(hjust = .5))
+```
+
+**How are distributed the categorical features across its levels?**
+**And what about fraud ratio by variable and level?**
+
+Here we are restricting the study to variables with less than 10 levels:
+
+```{r, fig.width = 13, fig.height = 8}
+fraud_ratio <- trainSet %>% 
+  mutate(Is_Fraud = as.factor(Is_Fraud)) %>% 
+  select_if(is.factor) %>% 
+  select(-one_of("M4")) %>% 
+  mutate(Is_Fraud = if_else(Is_Fraud == 0, 0, 1)) %>% 
+  gather(Var, Level, -Is_Fraud) %>%
+  group_by(Var, Level) %>% 
+  summarise(FraudRatio = sum(Is_Fraud)/n()*100,
+            FraudRatio = FraudRatio %>% round(1)) %>%
+  ungroup() 
+
+trainSet_summarised1 <- trainSet %>% 
+  mutate(Is_Fraud = as.factor(Is_Fraud)) %>% 
+  select_if(is.factor) %>% 
+  select(-one_of("M4")) %>% 
+  gather(Var, Level, -Is_Fraud) %>%
+  group_by(Is_Fraud, Var, Level) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  left_join(n_levels_df, by = c("Var")) %>% 
+  filter(NLevels < 10) 
+
+var_levels <- trainSet_summarised1 %>% 
+  group_split(Var) %>% 
+  map_dfr(~ .x %>% expand(Is_Fraud, Var, Level))
+
+trainSet_summarised <- trainSet_summarised1 %>% 
+  full_join(var_levels, by = c("Is_Fraud", "Var", "Level")) %>% 
+  left_join(fraud_ratio, by = c("Var", "Level")) %>%
+  mutate(n = if_else(is.na(n), 0L, n),
+         FraudRatio = if_else(is.na(FraudRatio) & Is_Fraud == "0", 100, FraudRatio),
+         FraudRatio = if_else(is.na(FraudRatio) & Is_Fraud == "1", 0, FraudRatio)) %>% 
+  arrange(Var) %>% 
+  fill(NLevels, .direction = "down")
+
+trainSet_summarised %>% 
+  mutate(FraudRatio = if_else(Is_Fraud == "0", NA_real_, FraudRatio),
+         Is_Fraud = fct_reorder(Is_Fraud, n)) %>%
+  ggplot() + 
+  geom_col(aes(Level, n, fill = Is_Fraud), position = "stack", alpha = 0.5) + 
+  geom_line(data = . %>% filter(Is_Fraud == "1"),
+            aes(x = Level, y = FraudRatio*5e5, group = Is_Fraud), col = "firebrick") + 
+  geom_point(data = . %>% filter(Is_Fraud == "1"),
+             aes(x = Level, y = FraudRatio*5e5), col = "firebrick") +
+  facet_wrap(~Var, scales = "free") + 
+  theme(axis.text.x = element_text(angle = 10, size = 10),
+        axis.ticks = element_blank(), 
+        axis.title.x = element_blank(),
+        axis.title.y.right = element_text(color = "firebrick"), 
+        plot.title = element_text(hjust = .5, size = 17),
+        plot.subtitle = element_text(hjust = .5, size = 14)) +
+  labs(title = "Categorical variables distribution by level",
+       y = "Number of observations") + 
+  scale_fill_tableau(direction = -1) + 
+  scale_y_continuous(sec.axis = sec_axis(~ . / 5e5, name = "% of Fraud"))
+```
+
+
+# Time based graphs
+
+Now let's take a look to the time variable: **TransactionDT**.
+
+We were told that "The TransactionDT feature is a timedelta from a given reference datetime (not an actual timestamp)." In [this kernel](https://www.kaggle.com/kevinbonnes/transactiondt-starting-at-2017-12-01) @Kevin suggested an interesting hypothesis about the date and time of our records, being the reference datetime the 1st of December 2017.
+
+Here I am assuming his analysis is correct and building over it.
+
+## Fraud Ratios
+
+**How are transactions distributed across months and hours or days of the week?**
+  
+  ```{r, fig.height= 3}
+trainSet_timeFeatures <- trainSet %>%
+  select(TransactionDT, Is_Fraud) %>%
+  mutate(Is_Fraud = as.factor(Is_Fraud) %>% fct_reorder(Is_Fraud, .desc = T),
+         TransactionDT = ymd(20171201) %>% as_datetime() %>% add(seconds(TransactionDT)),
+         Hour = TransactionDT %>% hour() %>% as.factor(),
+         WeekDay= TransactionDT %>% wday(week_start = 1, label = T, abbr = T) %>% as.factor(),
+         Month = TransactionDT %>% floor_date("month") %>% as.factor())
+
+
+# Transactions by month
+
+ratioByMonths <- trainSet_timeFeatures %>%
+  group_by(Month, Is_Fraud) %>%
+  count() %>%
+  ungroup() %>%
+  group_split(Month) %>%
+  map_dfr(~ .x %>%
+            mutate(Ratio = filter(., Is_Fraud == 1) %>% pull(n) %>% divide_by(n) %>% multiply_by(100)) %>%
+            filter(Is_Fraud == 0) %>%
+            select(Month, FraudRatio = Ratio))
+
+trainSet_timeFeatures %>%
+  group_by(Month, Is_Fraud) %>%
+  count() %>%
+  left_join(ratioByMonths, by = "Month") %>%
+  ggplot() +
+  geom_bar(aes(x = Month, y = n, fill = Is_Fraud, col = Is_Fraud), stat = "identity", alpha = .5) +
+  geom_line(aes(x = Month, y = FraudRatio*1e4, group = Is_Fraud), col = "firebrick") +
+  geom_point(aes(x = Month, y = FraudRatio*1e4), col = "firebrick") +
+  scale_color_tableau(direction = -1) +
+  scale_fill_tableau(direction = -1) +
+  theme(axis.title.y.left = element_blank(),
+        axis.title.y.right = element_text(color = "firebrick"),
+        plot.title = element_text(hjust = .5)) +
+  labs(title = "Number of transactions and fraud ratio by month") +
+  scale_y_continuous(sec.axis = sec_axis(~ . / 1e4, name = "% of Fraud"))
+
+
+# Transactions by hour
+
+ratioByHours <- trainSet_timeFeatures %>%
+  group_by(Hour, Is_Fraud) %>%
+  count() %>%
+  ungroup() %>%
+  group_split(Hour) %>%
+  map_dfr(~ .x %>%
+            mutate(Ratio = filter(., Is_Fraud == 1) %>% pull(n) %>% divide_by(n) %>% multiply_by(100)) %>%
+            filter(Is_Fraud == 0) %>%
+            select(Hour, FraudRatio = Ratio))
+
+trainSet %>%
+  select(TransactionDT, Is_Fraud) %>%
+  mutate(Is_Fraud = as.factor(Is_Fraud) %>% fct_reorder(Is_Fraud, .desc = T),
+         TransactionDT = ymd(20171201) %>% as_datetime() %>% add(seconds(TransactionDT)),
+         Hour = TransactionDT %>% hour() %>% as.factor()) %>%
+  group_by(Hour, Is_Fraud) %>%
+  count() %>%
+  left_join(ratioByHours, by = "Hour") %>%
+  ggplot() +
+  geom_bar(aes(x = Hour, y = n, fill = Is_Fraud, col = Is_Fraud), stat = "identity", alpha = .5) +
+  geom_line(aes(x = Hour, y = FraudRatio*1e4, group = Is_Fraud), col = "firebrick") +
+  geom_point(aes(x = Hour, y = FraudRatio*1e4), col = "firebrick") +
+  scale_color_tableau(direction = -1) +
+  scale_fill_tableau(direction = -1) +
+  theme(axis.title.y.left = element_blank(),
+        axis.title.y.right = element_text(color = "firebrick"),
+        plot.title = element_text(hjust = .5)) +
+  labs(title = "Number of transactions and fraud ratio by hour") +
+  scale_y_continuous(sec.axis = sec_axis(~ . / 1e4, name = "% of Fraud"))
+
+
+# Transactions by weekday
+
+ratioByWeekDays <- trainSet_timeFeatures %>%
+  group_by(WeekDay, Is_Fraud) %>%
+  count() %>%
+  ungroup() %>%
+  group_split(WeekDay) %>%
+  map_dfr(~ .x %>%
+            mutate(Ratio = filter(., Is_Fraud == 1) %>% pull(n) %>% divide_by(n) %>% multiply_by(100)) %>%
+            filter(Is_Fraud == 0) %>%
+            select(WeekDay, FraudRatio = Ratio))
+
+trainSet_timeFeatures %>%
+  group_by(WeekDay, Is_Fraud) %>%
+  count() %>%
+  left_join(ratioByWeekDays, by = "WeekDay") %>%
+  ggplot() +
+  geom_bar(aes(x = WeekDay, y = n, fill = Is_Fraud, col = Is_Fraud), stat = "identity", alpha = .5) +
+  geom_line(aes(x = WeekDay, y = FraudRatio*1e4, group = Is_Fraud), col = "firebrick") +
+  geom_point(aes(x = WeekDay, y = FraudRatio*1e4), col = "firebrick") +
+  scale_color_tableau(direction = -1) +
+  scale_fill_tableau(direction = -1) +
+  theme(axis.title.y.left = element_blank(),
+        axis.title.y.right = element_text(color = "firebrick"),
+        plot.title = element_text(hjust = .5)) +
+  labs(title = "Number of transactions and fraud ratio by weekday") +
+  scale_y_continuous(sec.axis = sec_axis(~ . / 1e4, name = "% of Fraud"))
+```
+
+And now the Transaction amount evolution through time.
+
+**Can we peek a trend in TransactionAmt feature by months?**
+  
+  ```{r, fig.height=6}
+trainSet %>%
+  select(TransactionDT, Is_Fraud, TransactionAmt) %>%
+  mutate(Is_Fraud = as.factor(Is_Fraud),
+         TransactionDT = ymd(20171201) %>% as_datetime() %>% add(seconds(TransactionDT)),
+         Month = TransactionDT %>% floor_date("month") %>% as.factor()) %>%
+  ggplot() +
+  geom_density_ridges(aes(x = TransactionAmt, y = fct_rev(Month), fill = Is_Fraud, col = Is_Fraud),
+                      alpha = .25) +
+  scale_color_tableau() +
+  scale_fill_tableau() +
+  lims(x = c(0,1000)) +
+  labs(title = "Transaction amount distribution by Is_Fraud",
+       subtitle = "Bounded between 0 and 1000 USD",
+       x = "Transaction amount (USD)") +
+  theme(plot.title = element_text(hjust = .5),
+        plot.subtitle = element_text(hjust = .5),
+        axis.title.y = element_blank())
+```
+
+```{r, echo=FALSE}
+test_identity <- vroom("../input/ieee-fraud-detection/test_identity.csv", delim = ",")
+test_transaction <- vroom("../input/ieee-fraud-detection/test_transaction.csv", delim = ",") %>% 
+  mutate_at(vars(ProductCD, card1:card6, addr1, addr2,
+                 P_emaildomain, R_emaildomain, M1:M9), as.factor)
+
+test_identity %<>%
+  mutate_at(vars(id_12:id_38, DeviceType, DeviceInfo), as.factor) %>% 
+  mutate(N_NAs_id = rowSums(is.na(.)),
+         Has_Identity = TRUE)
+
+testSet <- full_join(test_identity, test_transaction, by = "TransactionID") %>%
+  mutate(Is_Fraud = NA) %>%
+  mutate(Has_Identity = if_else(is.na(Has_Identity), FALSE, Has_Identity)) %>% 
+  select(TransactionID, Is_Fraud, everything())
+```
+
+Now I am going to bind training and test set to display the evolution of some variables through time
+
+```{r, message=FALSE, cache=FALSE}
+allDataSet <- bind_rows(trainSet %>% mutate(rn = row_number(), Section = "Train") %>% filter(rn %% 10 == 0),
+                        testSet %>% mutate(rn = row_number(), Section = "Test") %>% filter(rn %% 10 == 0))
+
+allDataSet %<>%
+  mutate(TransactionDT = ymd(20171201) %>% as_datetime() %>% add(seconds(TransactionDT)))
+```
+
+```{r, cache=FALSE, echo=FALSE}
+rm(trainSet)
+rm(testSet)
+rm(trainSet_timeFeatures)
+gc()
+```
+
+## V Features 
+```{r}
+allDataSet %>%
+  select(TransactionDT, V1:V12, Section) %>%
+  gather(Var, Value, -TransactionDT, -Section) %>%
+  mutate(VarIndex = Var %>% str_replace_all("V", "") %>% as.numeric(),
+         Var = fct_reorder(Var, VarIndex)) %>%
+  ggplot() +
+  geom_point(aes(TransactionDT, Value, col = Section), alpha = .5) +
+  facet_wrap(~Var, scales = "free_y") +
+  labs(title = "First V variables evolution over time",
+       x = NULL, y = NULL) +
+  scale_color_tableau() + 
+  scale_x_datetime(date_breaks = "5 months")
+```
+
+## D Features
+
+```{r}
+allDataSet %>%
+  select(TransactionDT, starts_with("D"), Section) %>%
+  select(-starts_with("dist"), -starts_with("Device")) %>%
+  gather(Var, Value, -TransactionDT, -Section) %>%
+  mutate(VarIndex = Var %>% str_replace_all("D", "") %>% as.numeric(),
+         Var = fct_reorder(Var, VarIndex)) %>%
+  ggplot() +
+  geom_point(aes(TransactionDT, Value, col = Section), alpha = .15) +
+  facet_wrap(~Var, scales = "free_y") +
+  labs(title = "D variables evolution over time",
+       x = NULL, y = NULL) +
+  scale_color_tableau() + 
+  scale_x_datetime(date_breaks = "5 months")
+```
+
+## ID Features
+
+```{r}
+id_numeric_Vars <- allDataSet %>% select(starts_with("id")) %>% select_if(is.numeric) %>% names()
+
+allDataSet %>% 
+  select(TransactionDT, one_of(id_numeric_Vars), Section) %>% 
+  gather(Var, Value, -TransactionDT, -Section) %>%
+  mutate(VarIndex = Var %>% str_replace_all("D", "") %>% as.numeric(),
+         Var = fct_reorder(Var, VarIndex)) %>%
+  ggplot() +
+  geom_point(aes(TransactionDT, Value, col = Section), alpha = .15) +
+  facet_wrap(~Var, scales = "free_y") +
+  labs(title = "ID variables evolution over time",
+       x = NULL, y = NULL) +
+  scale_color_tableau() + 
+  scale_x_datetime(date_breaks = "5 months")
+```
+
+\ 
+
+**And that's all for now!**
